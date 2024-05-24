@@ -194,6 +194,7 @@ void Perception::updateMapLaserWithLogOdds(const std::vector<float>& z)
 
     int rx = robot.x*scale_;
     int ry = robot.y*scale_;
+    float theta = robot.theta;
 
     float locc, lfree;
     float pocc = 0.7, pfree = 0.4;
@@ -217,11 +218,36 @@ void Perception::updateMapLaserWithLogOdds(const std::vector<float>& z)
     // importante lembrar de converter o valor de log-odds para OccupancyGrid data (que vai de 0 a 100)
     // Dica: converter primeiro para probabilidades usando a funcao getLikelihoodFromLogOdds() e multiplicar por 100
 
+    float r = 0.0;
+    float phi = 0.0;
+    int k = 0;
+    int i = 0;
 
+    for(int x = rx - maxRangeInt; x <= (rx + maxRangeInt); x++) {
+        for(int y = ry - maxRangeInt; y <= (ry + maxRangeInt); y++) {
+            // Inverse Sensor Model
+            r = sqrtf(pow(x-rx, 2) + pow(y-ry, 2))/scale_;
+            phi = RAD2DEG(atan2(y-ry, x-rx)) - theta;
+            phi = normalizeAngleDEG(phi);
+            k = getNearestLaserBeam(phi);
 
+            if((phi < 90.0 && phi > -90) && r <= maxRange) {
+                i = getCellIndexFromXY(x, y);
 
+                float k_angle = getAngleOfLaserBeam(k);
 
-
+                if(r > std::min(maxRange, z[k]+lambda_r/2) || fabs(phi-k_angle) > lambda_phi/2) {
+                    gridLaserLogOdds_[i] = gridLaserLogOdds_[i];
+                } else if(z[k] < maxRange && fabs(r-z[k]) < lambda_r/2) {
+                    gridLaserLogOdds_[i] = gridLaserLogOdds_[i] + locc;
+                } else if(r <= z[k]) {
+                    gridLaserLogOdds_[i] = gridLaserLogOdds_[i] + lfree;
+                }
+    
+                msg_mapLaserLogOdds_.data[i] = getLikelihoodFromLogOdds(gridLaserLogOdds_[i])*100;
+            }
+        }
+    }
 
     pub_mapLaserLogOdds_.publish(msg_mapLaserLogOdds_);    
 }
@@ -250,15 +276,7 @@ void Perception::updateMapLaserWithHIMM(const std::vector<float>& z)
     // para visualizar corretamente no rviz, sempre atualizar msg_mapLaserHIMM_.data[i]
     // importante lembrar de converter o valor, originalmente de 0 a 15, para OccupancyGrid data (que vai de 0 a 100)
 
-
-
-
-
-
-
-
-
-
+    
 
     pub_mapLaserHIMM_.publish(msg_mapLaserHIMM_);
 }
