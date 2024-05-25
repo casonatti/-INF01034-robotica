@@ -12,6 +12,8 @@ float normalizeAngleRAD(float a);
 float getLikelihoodFromLogOdds(float logodds);
 float getLogOddsFromLikelihood(float likelihood);
 
+int map(int value, int fromLow, int fromHigh, int toLow, int toHigh);
+
 typedef struct{
     float x, y, theta;
 } Pose2D;

@@ -259,6 +259,7 @@ void Perception::updateMapLaserWithHIMM(const std::vector<float>& z)
 
     int rx = robot.x*scale_;
     int ry = robot.y*scale_;
+    float theta = robot.theta;
 
     float maxRange = 10.0; // 10 m
     float lambda_r = 0.2; //  20 cm
@@ -276,7 +277,44 @@ void Perception::updateMapLaserWithHIMM(const std::vector<float>& z)
     // para visualizar corretamente no rviz, sempre atualizar msg_mapLaserHIMM_.data[i]
     // importante lembrar de converter o valor, originalmente de 0 a 15, para OccupancyGrid data (que vai de 0 a 100)
 
-    
+    float r = 0.0;
+    float phi = 0.0;
+    int k = 0;
+    int i = 0;
+
+    for(int x = rx - maxRangeInt; x <= (rx + maxRangeInt); x++) {
+        for(int y = ry - maxRangeInt; y <= (ry + maxRangeInt); y++) {
+            // Inverse Sensor Model
+            r = sqrtf(pow(x-rx, 2) + pow(y-ry, 2))/scale_;
+            phi = RAD2DEG(atan2(y-ry, x-rx)) - theta;
+            phi = normalizeAngleDEG(phi);
+            k = getNearestLaserBeam(phi);
+
+            if((phi < 90.0 && phi > -90) && r <= maxRange) {
+                i = getCellIndexFromXY(x, y);
+
+                float k_angle = getAngleOfLaserBeam(k);
+
+                if(r > std::min(maxRange, z[k]+lambda_r/2) || fabs(phi-k_angle) > lambda_phi/2) {
+                    gridLaserHIMM_[i] = gridLaserHIMM_[i];
+                } else if(z[k] < maxRange && fabs(r-z[k]) < lambda_r/2) {
+                    gridLaserHIMM_[i] = gridLaserHIMM_[i] + 3;
+                    
+                    if(gridLaserHIMM_[i] > 15)
+                        gridLaserHIMM_[i] = 15;
+
+                } else if(r <= z[k]) {
+                    gridLaserHIMM_[i] = gridLaserHIMM_[i] - 1;                   
+                    
+                    if(gridLaserHIMM_[i] < 0)
+                        gridLaserHIMM_[i] = 0;
+
+                }
+
+                msg_mapLaserHIMM_.data[i] = map(gridLaserHIMM_[i], 0, 15, 0, 100);
+            }
+        }
+    }
 
     pub_mapLaserHIMM_.publish(msg_mapLaserHIMM_);
 }

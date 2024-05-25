@@ -28,3 +28,7 @@ float getLogOddsFromLikelihood(float likelihood)
 {
     return log(likelihood/(1.0-likelihood));
 }
+
+int map(int value, int fromLow, int fromHigh, int toLow, int toHigh) {
+    return (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow) + toLow;
+}
