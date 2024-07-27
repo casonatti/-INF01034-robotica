@@ -12,7 +12,11 @@ float normalizeAngleRAD(float a);
 float getLikelihoodFromLogOdds(float logodds);
 float getLogOddsFromLikelihood(float likelihood);
 
-int map(int value, int fromLow, int fromHigh, int toLow, int toHigh);
+int map(int value, int from_low, int from_high, int to_low, int to_high);
+
+float sonarMean(float R, float r, float beta, float alpha);
+
+float sonarOcc(float occ_update, float occ);
 
 typedef struct{
     float x, y, theta;

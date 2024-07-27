@@ -206,18 +206,6 @@ void Perception::updateMapLaserWithLogOdds(const std::vector<float>& z)
     float lambda_phi = 1.0;  // 1 degree
     int maxRangeInt = maxRange*scale_;
 
-    // TODO:
-    // varrer celulas ao redor de (rx,ry) em um range de -maxRangeInt ate +maxRangeInt nas duas direcoes
-    // e entao atualizar celulas dentro do campo de visao dos sensores 
-    
-    // para acessar/atualizar ocupacao da i-esima celula do mapa usar:
-    // gridLaserLogOdds_[i]
-    // onde i eh o indice da celula u,v, que pode ser obtido com a funcao auxiliar i=getCellIndexFromXY(u,v);
-    
-    // para visualizar corretamente no rviz, sempre atualizar msg_mapLaserLogOdds_.data[i]
-    // importante lembrar de converter o valor de log-odds para OccupancyGrid data (que vai de 0 a 100)
-    // Dica: converter primeiro para probabilidades usando a funcao getLikelihoodFromLogOdds() e multiplicar por 100
-
     float r = 0.0;
     float phi = 0.0;
     int k = 0;
@@ -255,7 +243,7 @@ void Perception::updateMapLaserWithLogOdds(const std::vector<float>& z)
 void Perception::updateMapLaserWithHIMM(const std::vector<float>& z)
 {
     Pose2D robot = getCurrentRobotPose(); // x,y in meters, theta in degrees
-    std::cout << robot.x << ' ' << robot.y << ' ' << robot.theta << std::endl;
+    // std::cout << robot.x << ' ' << robot.y << ' ' << robot.theta << std::endl;
 
     int rx = robot.x*scale_;
     int ry = robot.y*scale_;
@@ -265,17 +253,6 @@ void Perception::updateMapLaserWithHIMM(const std::vector<float>& z)
     float lambda_r = 0.2; //  20 cm
     float lambda_phi = 1.0;  // 1 degree
     int maxRangeInt = maxRange*scale_;
-
-    // TODO:
-    // varrer celulas ao redor de (rx,ry) em um range de -maxRangeInt ate +maxRangeInt nas duas direcoes
-    // e entao atualizar celulas dentro do campo de visao dos sensores 
-    
-    // para acessar/atualizar ocupacao da i-esima celula do mapa usar:
-    // gridLaserHIMM_[i]
-    // onde i eh o indice da celula u,v, que pode ser obtido com a funcao auxiliar i=getCellIndexFromXY(u,v);
-    
-    // para visualizar corretamente no rviz, sempre atualizar msg_mapLaserHIMM_.data[i]
-    // importante lembrar de converter o valor, originalmente de 0 a 15, para OccupancyGrid data (que vai de 0 a 100)
 
     float r = 0.0;
     float phi = 0.0;
@@ -325,6 +302,7 @@ void Perception::updateMapSonar(const std::vector<float>& z)
 
     int rx = robot.x*scale_;
     int ry = robot.y*scale_;
+    float theta = robot.theta;
 
     float maxRange = 5.0; // 5 m
     float lambda_r = 0.5; //  50 cm
@@ -333,27 +311,55 @@ void Perception::updateMapSonar(const std::vector<float>& z)
 
     float R = maxRange;
     float beta = lambda_phi/2.0;  // 15 degrees
+    float maxOcc = 0.99;
+    float minOcc = 0.01;
 
-    
-    // TODO:
-    // varrer celulas ao redor de (rx,ry) em um range de -maxRangeInt ate +maxRangeInt nas duas direcoes
-    // e entao atualizar celulas dentro do campo de visao dos sensores 
-    // devido a menor quantidade de sensores no sonar, menos celulas serao atualizadas
-    // Dica: usar um angulo maior para celulas proximas ao robo e um angulo menor nos outros casos 
-    
-    // para acessar/atualizar ocupacao da i-esima celula do mapa usar:
-    // gridSonarHIMM_[i]
-    // onde i eh o indice da celula u,v, que pode ser obtido com a funcao auxiliar i=getCellIndexFromXY(u,v);
-    
-    // para visualizar corretamente no rviz, sempre atualizar msg_mapSonarHIMM_.data[i]
-    // importante lembrar de converter o valor, originalmente de 0 a 15, para OccupancyGrid data (que vai de 0 a 100)
+    float r = 0.0;
+    float phi = 0.0;
+    int alpha = 0;
+    int i = 0;
 
+    float occ = minOcc;
 
+    for(int x = rx - maxRangeInt; x <= (rx + maxRangeInt); x++) {
+        for(int y = ry - maxRangeInt; y <= (ry + maxRangeInt); y++) {
+            // Inverse Sensor Model
+            r = sqrtf(pow(x-rx, 2) + pow(y-ry, 2))/scale_;
+            phi = RAD2DEG(atan2(y-ry, x-rx)) - theta;
+            phi = normalizeAngleDEG(phi);
+            alpha = getNearestSonarBeam(phi);
 
+            if((phi < 105.0 && phi > -105.0) && r <= maxRange) {
+                i = getCellIndexFromXY(x, y);
 
+                float alpha_angle = getAngleOfSonarBeam(alpha);
 
+                if(r > std::min(maxRange, z[alpha]+lambda_r/2) || fabs(phi-alpha_angle) > lambda_phi/2) {
+                    gridSonar_[i] = gridSonar_[i];
+                } else if(z[alpha] < maxRange && fabs(r-z[alpha]) < lambda_r/2) {
+                    gridSonar_[i] = 0.5 * sonarMean(R, r, beta, 0) + 0.5;
+                    if(gridSonar_[i] > 1.0)
+                      gridSonar_[i] = maxOcc;
 
+                    // occ = sonarOcc(gridSonar_[i], msg_mapSonar_.data[i]);
+                } else if(r <= z[alpha]) {
+                    gridSonar_[i] = 0.5 * (1.0 - sonarMean(R, r, beta, 0));
+                    if(gridSonar_[i] < 0.0)
+                      gridSonar_[i] = minOcc;
 
+                    // occ = sonarOcc(gridSonar_[i], msg_mapSonar_.data[i]);
+                }
+
+                if(occ > 0.99)
+                  occ = maxOcc;
+                else if(occ < 0.01)
+                  occ = minOcc;
+                
+                // msg_mapSonar_.data[i] = occ * 100;
+                msg_mapSonar_.data[i] = gridSonar_[i]*100;
+            }
+        }
+    }
 
     pub_mapSonar_.publish(msg_mapSonar_);   
 }

@@ -29,6 +29,14 @@ float getLogOddsFromLikelihood(float likelihood)
     return log(likelihood/(1.0-likelihood));
 }
 
-int map(int value, int fromLow, int fromHigh, int toLow, int toHigh) {
-    return (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow) + toLow;
+int map(int value, int from_low, int from_high, int to_low, int to_high) {
+    return (value - from_low) * (to_high - to_low) / (from_high - from_low) + to_low;
+}
+
+float sonarMean(float R, float r, float beta, float alpha) {
+    return ((R - r)/R + (beta - alpha)/beta) / 2;
+}
+
+float sonarOcc(float occ_update, float occ) {
+    return (occ_update * occ) / ((occ_update * occ) + ((1.0 - occ_update) * (1.0 - occ)));
 }
