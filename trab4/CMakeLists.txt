@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(trab3)
+project(trab4)
 
 find_package(
   catkin REQUIRED COMPONENTS 
   roscpp
+  sensor_msgs
   geometry_msgs 
   tf
-  sensor_msgs
-  nav_msgs
+#  sensor_msgs
 #  std_msgs
 #  robot_state_publisher
 #  urdf
@@ -27,14 +27,13 @@ catkin_package(
 #    CATKIN DEPENDS
 )
 
-add_executable(exploracao
+add_executable(localizacao
+  src/Perception.cpp 
+  src/Utils.cpp 
   src/main.cpp
-  src/Action.cpp
-  src/Perception.cpp
-  src/Utils.cpp
 )
 
-target_link_libraries(exploracao
+target_link_libraries(localizacao
   ${catkin_LIBRARIES}
 )
 

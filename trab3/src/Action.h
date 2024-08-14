@@ -1,7 +1,9 @@
 #ifndef ACTION_H
 #define ACTION_H
 
-enum MotionMode {MANUAL, EXPLORE};
+#include <vector>
+
+enum MotionMode {MANUAL, POTENTIAL_FIELD};
 enum MovingDirection {STOP, FRONT, BACK, LEFT, RIGHT, AUTO};
 
 typedef struct

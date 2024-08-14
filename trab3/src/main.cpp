@@ -30,6 +30,8 @@ void* mainThreadFunction(void* arg)
 
     // Initialize publishers and subscribers
     ros::Publisher  pub_twist = n.advertise<geometry_msgs::Twist>("/rosaria_phi/cmd_vel", 1);
+    // ros::Subscriber sub_laser = n.subscribe("/rosaria_phi/laser_laserscan", 100, &Perception::receiveLaser, &perception);
+    // ros::Subscriber sub_sonar = n.subscribe("/rosaria_phi/sonar", 100, &Perception::receiveSonar, &perception);
     
     while(pressedKey!=27){
 
@@ -41,9 +43,9 @@ void* mainThreadFunction(void* arg)
         // Compute next action
         if(mc.mode == MANUAL){
             action.manualRobotMotion(mc.direction);
-        }else if(mc.mode == EXPLORE){
-            if(perception.hasValidDirection()){
-                double angle = perception.getDirectionOfNavigation();
+        }else if(mc.mode == POTENTIAL_FIELD){
+            if(perception.hasValidGradientDescent()){
+                double angle = perception.getDiffAngleToGradientDescent();
                 action.followDirection(angle);
             }else{
                 action.stopRobot();   

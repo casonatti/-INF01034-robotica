@@ -1,6 +1,5 @@
 #include "Perception.h"
 
-#include <queue>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 /////////////////////////////////////
@@ -11,31 +10,33 @@ Perception::Perception(ros::NodeHandle& n):
     nh_(n)
 {
     started_ = false;
-    directionOfNavigation_ = 0.0;
-    validDirection_=false;
+    diffAngleToGradientDescent_ = 0.0;
+    validGradientDescent_=false;
+
 
     // Initialize transform listener
     tfListener_ = new tf2_ros::TransformListener(tfBuffer_);
 
     // Initialize publishers
-    pub_mapOccType_ = nh_.advertise<nav_msgs::OccupancyGrid>("/mapa_occ_types", 1);
-    pub_mapPlanType_ = nh_.advertise<nav_msgs::OccupancyGrid>("/mapa_plan_types", 1);
-    pub_directionOfNavigation_ = nh_.advertise<geometry_msgs::PoseStamped>("/direction_navigation", 1);
+    pub_mapBoundaries_ = nh_.advertise<nav_msgs::OccupancyGrid>("/mapa_boundaries", 1);
+    pub_mapPotField_ = nh_.advertise<nav_msgs::OccupancyGrid>("/mapa_pot_field", 1);
+    pub_gradientDescent_ = nh_.advertise<geometry_msgs::PoseStamped>("/pot_gradientDescent", 1);
  
     // Initialize subscribers
     sub_gridmap_ = nh_.subscribe("/mapa_laser_HIMM", 1, &Perception::receiveGridmap, this);
+
 }
 
-bool Perception::hasValidDirection()
+bool Perception::hasValidGradientDescent()
 {
-    if(validDirection_==false)
-        std::cout << "Direcao de navegacao nao calculada" << std::endl;
-    return validDirection_;
+    if(validGradientDescent_==false)
+        std::cout << "Gradiente descendente nulo" << std::endl;
+    return validGradientDescent_;
 }
 
-double Perception::getDirectionOfNavigation()
+double Perception::getDiffAngleToGradientDescent()
 {
-    return directionOfNavigation_;
+    return diffAngleToGradientDescent_;
 }
 
 /////////////////////////////////////
@@ -67,8 +68,6 @@ void Perception::receiveGridmap(const nav_msgs::OccupancyGrid::ConstPtr &value)
     // int8[] data
 
     if(started_==false){
-
-        // At the first time, initialize all variables and maps
         numCellsX_ = value->info.width;
         numCellsY_ = value->info.height;
 
@@ -78,13 +77,9 @@ void Perception::receiveGridmap(const nav_msgs::OccupancyGrid::ConstPtr &value)
         mapHeight_ = numCellsY_*cellSize;
         scale_ = 1.0/cellSize;
 
-        occupancyTypeGrid_.resize(numCellsX_*numCellsY_,OCC_UNEXPLORED);
-        
-        planningTypeGrid_.resize(numCellsX_*numCellsY_,PLAN_INVALID);
-        fValueGrid_.resize(numCellsX_*numCellsY_,DBL_MAX);
-        gValueGrid_.resize(numCellsX_*numCellsY_,DBL_MAX);
-        hValueGrid_.resize(numCellsX_*numCellsY_,DBL_MAX);
-        parentGrid_.resize(numCellsX_*numCellsY_,-1);
+        boundariesGrid_.resize(numCellsX_*numCellsY_,0);
+        potFieldGrid_.resize(numCellsX_*numCellsY_,0.0);
+        msg_potField_.data.resize(numCellsX_*numCellsY_,0);
 
         minKnownX_ = numCellsX_-1;
         minKnownY_ = numCellsY_-1;
@@ -93,234 +88,214 @@ void Perception::receiveGridmap(const nav_msgs::OccupancyGrid::ConstPtr &value)
         started_=true;
     }
 
-    // Copy the occupancy grid map to the occupancyTypeGrid_ (which will be modified next)
     for(unsigned int i=0; i<numCellsX_*numCellsY_; i++)
-        occupancyTypeGrid_[i] = value->data[i];
+        boundariesGrid_[i] = value->data[i];
 
-    // Classify cells
     updateGridKnownLimits();
     updateCellsClassification();
+    for(int k=0;k<200;k++)
+        updatePotentialField();
 
-    // Get cell in free space closest to the robot position
-    // This is required because the robot may be near obstacles, 
-    // in regions where the planning is not performed
+    msg_boundaries_.header = value->header;
+    msg_boundaries_.info = value->info;
+    msg_boundaries_.data = boundariesGrid_;
+
+    msg_potField_.header = value->header;
+    msg_potField_.info = value->info;
+    for(unsigned int i=0; i<numCellsX_*numCellsY_; i++)
+        if(boundariesGrid_[i]==-1)
+            msg_potField_.data[i]=-1;
+        else
+            msg_potField_.data[i] = (int)round(potFieldGrid_[i]*100.0);
+
+    msg_gradientDescent_.header = value->header;
+
     Pose2D robotPose = getCurrentRobotPose();
-    int robotIndexInFreeSpace = getNearestFreeCell(robotPose);
+    msg_gradientDescent_.pose.position.x = robotPose.x;
+    msg_gradientDescent_.pose.position.y = robotPose.y;
+    msg_gradientDescent_.pose.position.z = 0;
 
-    // Select center of nearest viable frontier
-    int nearestFrontierIndex = clusterFrontiersAndReturnIndexOfClosestOne(robotIndexInFreeSpace);
-    if(nearestFrontierIndex != -1){
+    double yaw = computeDirectionOfGradientDescent(robotPose);
+    diffAngleToGradientDescent_ = normalizeAngleDEG(RAD2DEG(yaw)-robotPose.theta);
 
-        // Compute A*
-        // first - compute heuristic in all cells (euclidian distance to the goal)
-        computeHeuristic(nearestFrontierIndex);
-        // second - compute the A* algorithm
-        int goal = computeShortestPathToFrontier(robotIndexInFreeSpace);
-
-        // Printing the index of the goal cell, must be the same as 'nearestFrontierIndex'
-        std::cout << "goal " << goal << std::endl; //
-
-        // Mark path cells for vizualization
-        markPathCells(goal);
-
-        // Compute direction of navigation based on the path
-        double yaw = computeDirectionOfNavigation(robotIndexInFreeSpace, goal);
-        directionOfNavigation_ = normalizeAngleDEG(RAD2DEG(yaw)-robotPose.theta);
-        validDirection_=true;
-
-        // Update and publish direction of navigation
-        msg_directionOfNavigation_.header = value->header;
-        msg_directionOfNavigation_.pose.position.x = robotPose.x;
-        msg_directionOfNavigation_.pose.position.y = robotPose.y;
-        msg_directionOfNavigation_.pose.position.z = 0;
-        tf2::Quaternion quat_tf;
-        quat_tf.setRPY( 0, 0, yaw );
-        msg_directionOfNavigation_.pose.orientation=tf2::toMsg(quat_tf);
-        pub_directionOfNavigation_.publish(msg_directionOfNavigation_);
-
-    }else{
-        validDirection_=false;
-    }
-
-    // Publish occupancyTypeGrid_ and planningTypeGrid_
-    msg_occTypes_.header = value->header;
-    msg_occTypes_.info = value->info;
-    msg_occTypes_.data = occupancyTypeGrid_;
-    pub_mapOccType_.publish(msg_occTypes_);
-
-    msg_planTypes_.header = value->header;
-    msg_planTypes_.info = value->info;
-    msg_planTypes_.data = planningTypeGrid_;
-    pub_mapPlanType_.publish(msg_planTypes_);
+    tf2::Quaternion quat_tf;
+    quat_tf.setRPY( 0, 0, yaw );
+    msg_gradientDescent_.pose.orientation=tf2::toMsg(quat_tf);
+    
+    pub_mapBoundaries_.publish(msg_boundaries_);
+    pub_mapPotField_.publish(msg_potField_);
+    pub_gradientDescent_.publish(msg_gradientDescent_);
 }
 
-//////////////////////////////////////////////////////////////////
-/// FUNCOES DE PLANEJAMENTO DE CAMINHOS - A SEREM PREENCHIDAS  ///
-//////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////
+/// FUNCOES DE COMPUTACAO DO CAMPO POTENCIAL  ///
+/////////////////////////////////////////////////
 
 void Perception::updateCellsClassification()
 {
     /// TODO:
-    /// varra as celulas dentro dos limites conhecidos do mapa 'occupancyTypeGrid_'
+    /// varra as celulas dentro dos limites conhecidos do mapa 'boundariesGrid_'
     /// e atualize os valores, marcando como condição de contorno se for o caso
 
     /// coordenada x das celulas vai de minKnownX_ a maxKnownX_
     /// coordenada y das celulas vai de minKnownY_ a maxKnownY_
     /// compute o indice da celula no grid usando:
-    ///    int i = x + y*numCellsX_;
-    /// ex: atualizando uma celula como ocupada
-    ///    occupancyTypeGrid_[i] = OCC_OCCUPIED;
+    ///    unsigned int i = x + y*numCellsX_
 
     /// grid na entrada (valor inteiro): 
     /// - celulas desconhecidas = -1 
     /// - celulas conhecidas com ocupação variando de 0 a 100
 
     /// grid na saida (valor inteiro):
-    /// - celulas desconhecidas                = OCC_UNEXPLORED   (definido como -1)
-    /// - celulas de obstaculo                 = OCC_OCCUPIED     (definido como 100)
-    /// - celulas livres vizinhas a obstaculos = OCC_NEAROBSTACLE (definido como 90)
-    /// - celulas de fronteira                 = OCC_FRONTIER     (definido como 30)
-    /// - demais celulas livres                = OCC_FREE         (definido como 50)
+    /// - celulas desconhecidas seguem -1
+    /// - celulas de obstaculo = 100
+    /// - celulas de fronteira = 0
+    /// - celulas livres vizinhas a obstaculos = 90
+    /// - demais celulas livres = 50
 
-    // Dica
-    // 1) Marcar obstaculos
-    // 2) Marcar celulas vizinhas a obstaculos considerando 'dangerZoneWidth' celulas
-    int dangerZoneWidth = 5;
-    // 3) Marcar fronteiras (ignorando OCC_OCCUPIED e OCC_NEAROBSTACLE)
-    // 4) Marcar restantes, que nao sao inexploradas, como livre
+    int dangerZoneWidth = 1;
 
- 
- 
+    for(int x = minKnownX_; x <= maxKnownX_; x++) {
+      for(int y = minKnownY_; y <= maxKnownY_; y++) {
+        int i = x + y*numCellsX_;
 
+        if(boundariesGrid_[i] == -1) {
+          boundariesGrid_[i] = OCC_UNEXPLORED;
+        } else if(boundariesGrid_[i] == 100) {
+          boundariesGrid_[i] = OCC_OCCUPIED;
+          potFieldGrid_[i] = 1.0;
+          for(int auxX = dangerZoneWidth * -1; auxX<=dangerZoneWidth; auxX++) {
+            for(int auxY = dangerZoneWidth * -1; auxY<=dangerZoneWidth; auxY++) {
+              int i_aux = (x+auxX) + (y+auxY)*numCellsX_;
+              if(boundariesGrid_[i_aux] != OCC_OCCUPIED)
+                boundariesGrid_[i_aux] = OCC_NEAROBSTACLE;
+                potFieldGrid_[i] = 1.0;
+            }
+          }
+        } else if(boundariesGrid_[i] != OCC_OCCUPIED &&
+                  boundariesGrid_[i] != OCC_NEAROBSTACLE) {
 
-
-
-
-
-
-
-
+          if(boundariesGrid_[i] != OCC_UNEXPLORED)
+            boundariesGrid_[i] = OCC_FREE;
+          
+          for(int auxX = -1; auxX<=1; auxX++) {
+            for(int auxY = -1; auxY<=1; auxY++) {
+              int i_aux = (x+auxX) + (y+auxY)*numCellsX_;
+              if(boundariesGrid_[i_aux] == OCC_UNEXPLORED && boundariesGrid_[i] == OCC_FREE) {
+                boundariesGrid_[i] = OCC_FRONTIER;
+                potFieldGrid_[i] = 0.0;
+              }
+            }
+          }
+        }
+      }
+    }
 
 }
 
-void Perception::computeHeuristic(int goalIndex)
+void Perception::updatePotentialField()
 {
-    int goalX = goalIndex % numCellsX_;
-    int goalY = goalIndex / numCellsX_;
-
     /// TODO:
-    /// varra as celulas dentro dos limites conhecidos do mapa 'planningTypeGrid_'
-    /// e atualize os valores das medidas f, g, h e pi das celulas validas
-    
+    /// varra as celulas dentro dos limites conhecidos do mapa
+    /// e atualize os valores em 'potFieldGrid_' (que é float), 
+    /// consultando a classificação das celulas em 'boundariesGrid_' (que é inteiro)
+
     /// coordenada x das celulas vai de minKnownX_ a maxKnownX_
     /// coordenada y das celulas vai de minKnownY_ a maxKnownY_
     /// compute o indice da celula no grid usando:
-    ///    int i = x + y*numCellsX_;
+    ///    unsigned int i = x + y*numCellsX_
 
-    /// Dica: uma celula 'i' eh valida se (planningTypeGrid_[i] != PLAN_INVALID)
+    /// grid na saida ('potFieldGrid_'):
+    /// - celulas desconhecidas: nao computa potencial
+    /// - celulas de fronteira: potencial fixo 0.0
+    /// - celulas de obstaculo ou vizinhas: potencial fixo 1.0
+    /// - demais celulas livres: computa potencial em funcao dos vizinhos
 
-    /// A atualizacao deve seguir as seguintes regras:
-    ///   fValueGrid_[i] e gValueGrid_[i] - valores f e g: recebem DBL_MAX (equivalente ao infinito)
-    ///   parentGrid_[i] - valor pi (indicando o pai da celula): recebe -1, pois a priori nao aponta para ninguem. 
-    ///   hValueGrid_[i] - valor h - distancia para o goal
+    for(int x = minKnownX_; x <= maxKnownX_; x++) {
+      for(int y = minKnownY_; y <= maxKnownY_; y++) {
+        int i = x + y*numCellsX_;
+        
+        int up = y+1;
+        int down = y-1;
+        int right = x+1;
+        int left = x-1;
 
- 
- 
+        if(boundariesGrid_[i] == OCC_OCCUPIED || boundariesGrid_[i] == OCC_NEAROBSTACLE) {
+          potFieldGrid_[i] = 1.0;
+        } else if (boundariesGrid_[i] == OCC_FRONTIER) {
+          potFieldGrid_[i] = 0.0;
+        } else {
+          int i_aux_up = x + up*numCellsX_;
+          int i_aux_down = x + down*numCellsX_;
+          int i_aux_right = right + y*numCellsX_;
+          int i_aux_left = left + y*numCellsX_;
 
+          float potFieldAux = potFieldGrid_[i_aux_up] +
+                                potFieldGrid_[i_aux_down] +
+                                potFieldGrid_[i_aux_right] +
+                                potFieldGrid_[i_aux_left];
 
+          potFieldGrid_[i] = potFieldAux/4;
 
-
-
-
-
-
-
+          if(potFieldGrid_[i] > 1) {
+            potFieldGrid_[i] = potFieldGrid_[i]/100;
+          }
+        }
+      }
+    }
 
 }
 
-// offset para os 8 vizinhos
-// uso, i-esimo vizinho (nx,ny) da posicao (x,y):
-//      int nx = x+offset[i][0];
-//      int ny = y+offset[i][1];
-int offset[8][2] = {{-1,  1}, { 0,  1}, { 1,  1}, { 1,  0}, { 1, -1}, { 0, -1}, {-1, -1}, {-1,  0}};
-
-// custo de distancia para os 8 vizinhos
-// uso, atualizando custo do i-esimo vizinho
-//      int id_celula  =  x +  y*numCellsX_;
-//      int id_vizinho = nx + ny*numCellsX_;
-//      gValueGrid_[id_vizinho] = gValueGrid_[id_celula] + cost[i];
-double cost[8] = {sqrt(2), 1, sqrt(2), 1, sqrt(2), 1, sqrt(2), 1};
-
-int Perception::computeShortestPathToFrontier(int robotCellIndex)
+double Perception::computeDirectionOfGradientDescent(Pose2D robot)
 {
-    int rx = robotCellIndex % numCellsX_;
-    int ry = robotCellIndex / numCellsX_;
+    int rx = robot.x*scale_ + numCellsX_/2;
+    int ry = robot.y*scale_ + numCellsY_/2;
 
-    /// TODO:
-    /// Computar o algoritmo A Star usando os valores em hValueGrid_ 
-    /// e atualizando os valores em fValueGrid_, gValueGrid_ e parentGrid_
+    /// TODO: 
+    /// computar direcao do gradiente descendente na celula do robô
+    /// usando potenciais dos quatro vizinhos
+    /// para acessar o indice da celula do robo usar:
+    /// unsigned int i = rx + (ry)*numCellsX_;
 
-    /// Ao fim deve retornar o indice da celula de goal, encontrada na busca. Ou -1 se nao encontrar
-    int goal = -1;
+    /// compute a diferença de potencial em x e y e calcule o angulo 'yaw' usando atan2
+    /// resultado é em radianos
+    double yaw=0;
+    double dx=0.0, dy=0.0;
 
-    /// Sugestao: usar a fila de prioridades abaixo
-    /// onde o primeiro elemento do par eh o f-value e o segundo elemento eh o indice da celula
-    std::priority_queue< std::pair<double, int> , std::vector<std::pair<double, int>>, std::greater<std::pair<double, int>> > pq;
+    int up = ry+1;
+    int down = ry-1;
+    int right = rx+1;
+    int left = rx-1;
 
-    /// Exemplo: insercao na fila
-    //      std::pair<double, int> vizinho;
-    //      vizinho.first = fValueGrid_[id_vizinho];
-    //      vizinho.second = id_vizinho;
-    //      pq.push(vizinho);
+    int i_aux_up = rx + up*numCellsX_;
+    int i_aux_down = rx + down*numCellsX_;
+    int i_aux_right = right + ry*numCellsX_;
+    int i_aux_left = left + ry*numCellsX_;
 
-    /// Exemplo: remocao da fila
-    //      std::pair<double, int> celula = pq.top();
-    //      pq.pop();
-    //      int id_celula = celula.second;
+    dx = ((potFieldGrid_[i_aux_right]-potFieldGrid_[i_aux_left]))/2;
+    dy = ((potFieldGrid_[i_aux_up]-potFieldGrid_[i_aux_down]))/2;
 
-    /// O algoritmo comeca da posicao do robo
-    gValueGrid_[robotCellIndex] = 0;
+    yaw = atan2(-dy,-dx);
 
-    std::pair<double, int> inicio;
-    inicio.first = fValueGrid_[robotCellIndex];
-    inicio.second = robotCellIndex;
+    // teste para verificar se gradiente é valido ou nulo
+    if(fabs(dx)<1e-30 && fabs(dy)<1e-30)
+        validGradientDescent_=false;
+    else
+        validGradientDescent_=true;
 
-    pq.push(inicio);
-
-    /// Completar algoritmo A Star, consultando a fila enquanto ela nao estiver vazia
-    ///     while(!pq.empty())
-
- 
- 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    return goal;
+    return yaw;
 }
 
-////////////////////////////////////////////////////////
-/// FUNCOES AUXILIARES PARA PLANEJAMENTO DE CAMINHOS ///
-////////////////////////////////////////////////////////
+///////////////////////////
+/// FUNCOES AUXILIARES  ///
+///////////////////////////
 
-// Given the explored area, update the following variables: minKnownX_, maxKnownX_, minKnownY_, maxKnownY_
 void Perception::updateGridKnownLimits()
 {
-    for(int x=0; x<numCellsX_; x++){
-        for(int y=0; y<numCellsY_; y++){
-            int i = x + y*numCellsX_;
-            if(occupancyTypeGrid_[i]!=-1)
+    for(unsigned int x=0; x<numCellsX_; x++){
+        for(unsigned int y=0; y<numCellsY_; y++){
+            unsigned int i = x + y*numCellsX_;
+            if(boundariesGrid_[i]!=-1)
             {
                 if(x<minKnownX_) minKnownX_ = x;
                 if(y<minKnownY_) minKnownY_ = y;
@@ -331,189 +306,6 @@ void Perception::updateGridKnownLimits()
     }
 }
 
-// Groups all frontier cells in clusters, and keep the ones with size greater than 'minFrontierSize' 
-// Then selects the centers of each of the frontiers
-// Next, choose the one closest to the robot's position as the goal
-// Returns the index of the cell associated with the center of the selected frontier
-int Perception::clusterFrontiersAndReturnIndexOfClosestOne(int robotCellIndex)
-{
-    frontierCentersIndices.clear();
-
-    int width=1;
-    int minFrontierSize = 3;
-
-    // Check occupancyTypeGrid_ and set PLAN_GOALS in planningTypeGrid_
-    for(int x=minKnownX_; x<=maxKnownX_; x++){
-        for(int y=minKnownY_; y<=maxKnownY_; y++){
-            int i = x + y*numCellsX_;
-
-            if(occupancyTypeGrid_[i] == OCC_FRONTIER) 
-                planningTypeGrid_[i] = PLAN_GOALS;      // Frontier cells are goals
-            else if(occupancyTypeGrid_[i] == OCC_FREE) 
-                planningTypeGrid_[i] = PLAN_REGULAR;    // Free cells are regular cells (where path can be computed)
-            else
-                planningTypeGrid_[i] = PLAN_INVALID;    // Remaining cells are invalid for planning
-        }
-    }
-
-    // Group all neighboring goal cells
-    for(int x=minKnownX_; x<=maxKnownX_; x++){
-        for(int y=minKnownY_; y<=maxKnownY_; y++){
-            int i = x + y*numCellsX_;
-
-            // detect a goal cell that is not MARKED yet
-            if(planningTypeGrid_[i] == PLAN_GOALS){
-                planningTypeGrid_[i] = PLAN_MARKEDGOALS;
-
-                std::vector<unsigned int> frontier;
-
-                float centerx = 0, centery = 0;
-                float count = 0;
-
-                // mark all neighbor goal cells
-                // breadth-first search using a queue
-                std::queue<int> q;
-                q.push(i);
-                while(!q.empty())
-                {
-                    int c = q.front();
-                    q.pop();
-                    frontier.push_back(c);
-
-                    int cx = c % numCellsX_;
-                    int cy = c / numCellsX_;
-                    centerx += cx;
-                    centery += cy;
-                    count++;
-
-                    for(int nx=cx-width;nx<=cx+width;nx++){
-                        for(int ny=cy-width;ny<=cy+width;ny++){
-                            int ni = nx + ny*numCellsX_;
-                            if(planningTypeGrid_[ni] == PLAN_GOALS){
-                                planningTypeGrid_[ni] = PLAN_MARKEDGOALS;
-                                q.push(ni);
-                            }
-                        }
-                    }
-                }
-
-                // keep frontiers that are larger than minFrontierSize
-                if(count > minFrontierSize){
-                    centerx /= count;
-                    centery /= count;
- 
-                    // find cell closest to frontier center
-                    float minDist=FLT_MAX;
-                    int closest=-1;
-
-                    for(unsigned int k=0;k<frontier.size();k++){
-                        int fx = frontier[k] % numCellsX_;
-                        int fy = frontier[k] / numCellsX_;
-
-                        float dist = sqrt(pow(fx-centerx,2.0)+pow(fy-centery,2.0));
-                        if(dist < minDist){
-                            minDist = dist;
-                            closest = frontier[k];
-                        }
-                    }
-
-                    // add center of frontier to list of Goals
-                    frontierCentersIndices.push_back(closest);
-
-                }else{
-
-                    // ignore small frontiers
-                    for(unsigned int k=0;k<frontier.size();k++){
-                        planningTypeGrid_[frontier[k]] = PLAN_REGULAR;
-                    }
-                }
-            }
-        }
-    }
-
-    // These are the filtered frontiers (that are not too small)
-    std::cout << "Number of frontiers: " << frontierCentersIndices.size() << std::endl;
-    for(unsigned int k=0;k<frontierCentersIndices.size();k++){
-        planningTypeGrid_[frontierCentersIndices[k]] = PLAN_GOALS;
-    }
-
-    if(frontierCentersIndices.empty())
-        return -1;
-    else{
-
-        // Select nearest frontier among the filtered frontiers
-        int nearestFrontierIndex=-1;
-        float distance = DBL_MAX;
-
-        int rx = robotCellIndex % numCellsX_;
-        int ry = robotCellIndex / numCellsX_;
-        for(int k=0;k<frontierCentersIndices.size();k++){
-            int nFx = frontierCentersIndices[k] % numCellsX_;
-            int nFy = frontierCentersIndices[k] / numCellsX_;
-            float d = sqrt(pow(rx-nFx,2.0)+pow(ry-nFy,2.0));
-            if(d < distance)
-            {
-                distance = d;
-                nearestFrontierIndex = frontierCentersIndices[k];
-            }
-        }
-
-        // Clear frontiers that were not selected
-        for(int k=0;k<frontierCentersIndices.size();k++){
-            if(frontierCentersIndices[k] != nearestFrontierIndex)
-                planningTypeGrid_[frontierCentersIndices[k]] = PLAN_MARKEDGOALS;
-        }
-
-        return nearestFrontierIndex;
-    }
-}
-
-// Mark all path cells in the 'planningTypeGrid_' after the A* Star algorithm is computed
-// by checking the index of the parent of each cell starting from the goal
-void Perception::markPathCells(int goal)
-{
-    if(goal != -1){
-
-        int c = parentGrid_[goal];
-
-        while(c != -1){
-            planningTypeGrid_[c] = PLAN_PATH;
-            c = parentGrid_[c];
-        }
-    }
-}
-
-// Select a path cell in a distance given by 'localGoalRadius' from the robot
-// and compute the angle difference from the robot orientation to this cell
-double Perception::computeDirectionOfNavigation(int robotCellIndex, int goalIndex)
-{
-    int rx = robotCellIndex % numCellsX_;
-    int ry = robotCellIndex / numCellsX_;
-
-    int c = goalIndex;
-
-    double localGoalRadius = 5;
-
-    int cx, cy;
-
-    while(parentGrid_[c] != -1){
-        cx = c % numCellsX_;
-        cy = c / numCellsX_;
-
-        double dist = sqrt(pow(cx-rx,2.0)+pow(cy-ry,2.0));
-        
-        if(dist < localGoalRadius){
-            break;
-        }
-        c = parentGrid_[c];
-    }
-
-    double yaw = atan2(cy-ry,cx-rx);
-
-    return yaw;
-}
-
-// Return robot pose
 Pose2D Perception::getCurrentRobotPose()
 {
     Pose2D robotPose;
@@ -538,37 +330,4 @@ Pose2D Perception::getCurrentRobotPose()
     robotPose.theta = RAD2DEG(yaw);
 
     return robotPose;
-}
-
-// Return index of the free cell closest to the robot position
-int Perception::getNearestFreeCell(Pose2D robot)
-{
-    int rx = robot.x*scale_ + numCellsX_/2;
-    int ry = robot.y*scale_ + numCellsY_/2; 
-
-    int u;
-
-    for(int l=1; l<20; l++){
-
-        for(int cx=rx-l; cx<=rx+l; cx++){
-            u = cx + (ry+l)*numCellsX_;
-            if(occupancyTypeGrid_[u] == OCC_FREE)
-                return u;
-            u = cx + (ry-l)*numCellsX_;
-            if(occupancyTypeGrid_[u] == OCC_FREE)
-                return u;
-        }
-
-        for(int cy=ry-l; cy<=ry+l; cy++){
-            u = rx+l + cy*numCellsX_;
-            if(occupancyTypeGrid_[u] == OCC_FREE)
-                return u;
-            u = rx-l + cy*numCellsX_;
-            if(occupancyTypeGrid_[u] == OCC_FREE)
-                return u;
-        }
-
-    }
-
-    return -1;
 }

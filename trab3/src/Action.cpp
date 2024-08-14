@@ -27,11 +27,18 @@ void Action::followDirection(double angle)
     /// se o valor do angulo for muito grande (tanto positivo quanto negativo),
     /// fazer robô girar sobre o proprio eixo
 
+    float tp = 0.05;
 
-
-
-
-
+    if(angle >=150) {
+      linVel = 0;
+      angVel = 0.5;
+    } else if(angle <=30) {
+      linVel = 0;
+      angVel = -0.5;
+    } else {
+      linVel = 0.5;
+      angVel = tp * angle;
+    }
 
 }
 
@@ -104,11 +111,11 @@ MotionControl Action::handlePressedKey(char key)
     mc.mode=MANUAL;
     mc.direction=STOP;
 
-    if(key=='1'){
+    if(key=='m' or key=='M'){
         mc.mode=MANUAL;
         mc.direction=STOP;
-    }else if(key=='2'){
-        mc.mode=EXPLORE;
+    }else if(key=='p' or key=='P'){
+        mc.mode=POTENTIAL_FIELD;
         mc.direction=AUTO;
     }else if(key=='w' or key=='W'){
         mc.mode=MANUAL;

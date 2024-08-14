@@ -288,7 +288,11 @@ void Perception::updateMapLaserWithHIMM(const std::vector<float>& z)
 
                 }
 
-                msg_mapLaserHIMM_.data[i] = map(gridLaserHIMM_[i], 0, 15, 0, 100);
+                int res = map(gridLaserHIMM_[i], 0, 15, 0, 100);
+                if(res == 46)
+                  res = -1;
+
+                msg_mapLaserHIMM_.data[i] = res;
             }
         }
     }
@@ -355,8 +359,11 @@ void Perception::updateMapSonar(const std::vector<float>& z)
                 else if(occ < 0.01)
                   occ = minOcc;
                 
-                // msg_mapSonar_.data[i] = occ * 100;
-                msg_mapSonar_.data[i] = gridSonar_[i]*100;
+                int res = gridSonar_[i]*100;
+                if(res == 50)
+                  res = -1;
+
+                msg_mapSonar_.data[i] = res;
             }
         }
     }
